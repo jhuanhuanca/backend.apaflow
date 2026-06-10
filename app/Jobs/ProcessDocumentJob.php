@@ -7,6 +7,7 @@ use App\Services\SaaS\SubscriptionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Http\Client\Response;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
@@ -44,44 +45,32 @@ class ProcessDocumentJob implements ShouldQueue
             return;
         }
 
+        if (! $this->assertPythonReachable($document)) {
+            return;
+        }
+
         $absolute = $disk->path($document->original_file);
         $filename = basename($absolute);
-
-        $url = rtrim(config('services.python.url'), '/').'/process-document';
-        $timeout = (int) config('services.python.timeout', 300);
 
         $apaSettings = $document->user
             ? $subscriptions->resolvedApaSettings($document->user)
             : $subscriptions->defaultApaSettings();
 
         try {
-            $request = Http::timeout($timeout)
-                ->accept('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-                ->attach('file', file_get_contents($absolute), $filename)
-                ->attach(
-                    'apa_settings',
-                    json_encode($apaSettings, JSON_UNESCAPED_UNICODE),
-                    'settings.json',
-                    ['Content-Type' => 'application/json'],
-                );
-
-            $apiKey = config('services.python.api_key');
-            if (is_string($apiKey) && $apiKey !== '') {
-                $request = $request->withHeaders([
-                    'X-Internal-Api-Key' => $apiKey,
-                ]);
-            }
-
-            $response = $request->post($url);
+            $response = $this->callPythonProcessor($absolute, $filename, $apaSettings);
 
             if (! $response->successful()) {
-                $body = $response->body();
+                $body = mb_substr($response->body(), 0, 800);
                 Log::warning('Python APA devolvió error HTTP', [
                     'document_id' => $document->id,
                     'status' => $response->status(),
-                    'body' => mb_substr($body, 0, 2000),
+                    'body' => $body,
                 ]);
-                $this->failDocument($document, 'El motor Python respondió con error HTTP '.$response->status().'.');
+                $detail = $body !== '' ? " Detalle: {$body}" : '';
+                $this->failDocument(
+                    $document,
+                    'El motor Python respondió con error HTTP '.$response->status().'.'.$detail,
+                );
 
                 return;
             }
@@ -119,6 +108,68 @@ class ProcessDocumentJob implements ShouldQueue
             $msg = $exception ? $exception->getMessage() : 'Job fallido sin excepción.';
             $this->failDocument($document, 'Job en cola fallido: '.$msg);
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $apaSettings
+     */
+    private function callPythonProcessor(string $absolute, string $filename, array $apaSettings): Response
+    {
+        $url = rtrim((string) config('services.python.url'), '/').'/process-document';
+        $timeout = (int) config('services.python.timeout', 300);
+
+        $headers = [
+            'Accept' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ];
+        $apiKey = config('services.python.api_key');
+        if (is_string($apiKey) && $apiKey !== '') {
+            $headers['X-Internal-Api-Key'] = $apiKey;
+        }
+
+        return Http::timeout($timeout)
+            ->withHeaders($headers)
+            ->asMultipart()
+            ->post($url, [
+                [
+                    'name' => 'file',
+                    'contents' => file_get_contents($absolute),
+                    'filename' => $filename,
+                    'headers' => ['Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+                ],
+                [
+                    'name' => 'apa_settings',
+                    'contents' => json_encode($apaSettings, JSON_UNESCAPED_UNICODE),
+                ],
+            ]);
+    }
+
+    private function assertPythonReachable(Document $document): bool
+    {
+        $base = rtrim((string) config('services.python.url'), '/');
+
+        try {
+            $response = Http::timeout(5)->get("{$base}/health");
+            if (! $response->successful()) {
+                $this->failDocument(
+                    $document,
+                    "Motor Python inalcanzable en {$base} (health HTTP {$response->status()}). Revise: sudo systemctl status apaflow-ai",
+                );
+
+                return false;
+            }
+        } catch (Throwable $e) {
+            $hint = str_contains($e->getMessage(), 'Connection refused')
+                ? ' Nada escucha en ese puerto: compruebe `curl 127.0.0.1:8001/health` y `curl 127.0.0.1:8000/health`; PYTHON_SERVICE_URL debe coincidir.'
+                : '';
+            $this->failDocument(
+                $document,
+                "No se pudo conectar al motor Python en {$base}: {$e->getMessage()}.{$hint}",
+            );
+
+            return false;
+        }
+
+        return true;
     }
 
     private function failDocument(Document $document, string $message): void
