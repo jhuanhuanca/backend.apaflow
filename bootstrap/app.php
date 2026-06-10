@@ -22,6 +22,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->validateCsrfTokens(except: [
             'api/admin/*',
             'api/webhooks/*',
+            'api/guest/*',
         ]);
         $middleware->alias([
             'admin.active' => \App\Http\Middleware\EnsureAdminIsActive::class,
@@ -30,5 +31,14 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // Si la petición falla con 500, el navegador no ve CORS → "blocked by CORS policy".
+        $exceptions->respond(function (\Symfony\Component\HttpFoundation\Response $response, \Throwable $e, \Illuminate\Http\Request $request) {
+            if (! $request->is('api/*', 'sanctum/*')) {
+                return $response;
+            }
+
+            $cors = app(\Illuminate\Http\Middleware\HandleCors::class);
+
+            return $cors->handle($request, fn () => $response);
+        });
     })->create();

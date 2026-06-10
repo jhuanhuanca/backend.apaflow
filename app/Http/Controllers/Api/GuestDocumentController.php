@@ -8,9 +8,11 @@ use App\Models\Document;
 use App\Services\SaaS\CareerSelectionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 /**
  * Modo invitado: límites desde config/saas.php (expuestos en GET /api/config).
@@ -90,51 +92,79 @@ class GuestDocumentController extends Controller
             return $err;
         }
 
-        $fp = $this->fingerprint($request);
-        $used = Document::query()->where('guest_fingerprint', $fp)->count();
-        $max = $this->maxGuestUploads();
-        if ($used >= $max) {
+        try {
+            $fp = $this->fingerprint($request);
+            $used = Document::query()->where('guest_fingerprint', $fp)->count();
+            $max = $this->maxGuestUploads();
+            if ($used >= $max) {
+                return response()->json([
+                    'message' => "Has usado tu prueba gratuita sin cuenta ({$max}). Regístrate para seguir procesando documentos.",
+                ], 403);
+            }
+
+            $validated = $request->validate([
+                'file' => ['required', 'file', 'mimes:docx', 'max:51200'],
+                'career_id' => ['nullable', 'integer', 'exists:careers,id'],
+                'university' => ['required_without:career_id', 'string', 'max:255'],
+                'career' => ['required_without:career_id', 'string', 'max:255'],
+            ]);
+
+            $careerId = isset($validated['career_id']) ? (int) $validated['career_id'] : null;
+            $universityLabel = $validated['university'] ?? '';
+            $careerLabel = $validated['career'] ?? '';
+
+            if ($careerId) {
+                $resolved = $this->careerSelection->resolveCareer(null, $careerId);
+                $universityLabel = $resolved['university']->name;
+                $careerLabel = $resolved['career']->name;
+            }
+
+            $dir = $this->guestDir($fp);
+            $storedPath = $request->file('file')->store("documents/{$dir}", 'local');
+
+            $document = Document::create([
+                'user_id' => null,
+                'career_id' => $careerId,
+                'guest_fingerprint' => $fp,
+                'original_file' => $storedPath,
+                'processed_file' => null,
+                'status' => Document::STATUS_PENDING,
+                'university' => $universityLabel,
+                'career' => $careerLabel,
+            ]);
+
+            $document->addLog('Prueba gratuita (sin registro). Archivo guardado.');
+            $document->addLog('Documento encolado para formateo APA 7.');
+
+            try {
+                ProcessDocumentJob::dispatch($document);
+            } catch (Throwable $queueError) {
+                Log::error('No se pudo encolar ProcessDocumentJob (invitado)', [
+                    'document_id' => $document->id,
+                    'error' => $queueError->getMessage(),
+                ]);
+                $document->update(['status' => Document::STATUS_FAILED]);
+                $document->addLog('Error al encolar el procesamiento. Revisa Redis/cola en el servidor.');
+
+                return response()->json([
+                    'message' => 'El archivo se guardó pero la cola de procesamiento no está disponible. Intenta más tarde o contacta soporte.',
+                    'code' => 'QUEUE_UNAVAILABLE',
+                    'document_id' => $document->id,
+                ], 503);
+            }
+
+            return response()->json($document->load('logs'), 202);
+        } catch (Throwable $e) {
+            Log::error('Fallo upload invitado', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
-                'message' => "Has usado tu prueba gratuita sin cuenta ({$max}). Regístrate para seguir procesando documentos.",
-            ], 403);
+                'message' => 'No se pudo subir el documento. Verifica permisos de storage y migraciones en el servidor.',
+                'code' => 'GUEST_UPLOAD_FAILED',
+            ], 500);
         }
-
-        $validated = $request->validate([
-            'file' => ['required', 'file', 'mimes:docx', 'max:51200'],
-            'career_id' => ['nullable', 'integer', 'exists:careers,id'],
-            'university' => ['required_without:career_id', 'string', 'max:255'],
-            'career' => ['required_without:career_id', 'string', 'max:255'],
-        ]);
-
-        $careerId = isset($validated['career_id']) ? (int) $validated['career_id'] : null;
-        $universityLabel = $validated['university'] ?? '';
-        $careerLabel = $validated['career'] ?? '';
-
-        if ($careerId) {
-            $resolved = $this->careerSelection->resolveCareer(null, $careerId);
-            $universityLabel = $resolved['university']->name;
-            $careerLabel = $resolved['career']->name;
-        }
-
-        $dir = $this->guestDir($fp);
-        $storedPath = $request->file('file')->store("documents/{$dir}", 'local');
-
-        $document = Document::create([
-            'user_id' => null,
-            'career_id' => $careerId,
-            'guest_fingerprint' => $fp,
-            'original_file' => $storedPath,
-            'processed_file' => null,
-            'status' => Document::STATUS_PENDING,
-            'university' => $universityLabel,
-            'career' => $careerLabel,
-        ]);
-
-        $document->addLog('Prueba gratuita (sin registro). Archivo guardado.');
-        $document->addLog('Documento encolado para formateo APA 7.');
-        ProcessDocumentJob::dispatch($document);
-
-        return response()->json($document->load('logs'), 202);
     }
 
     public function download(Request $request, int $id): StreamedResponse|JsonResponse
