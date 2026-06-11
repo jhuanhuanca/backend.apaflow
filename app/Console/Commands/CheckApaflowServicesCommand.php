@@ -42,14 +42,23 @@ class CheckApaflowServicesCommand extends Command
         }
 
         $disk = Storage::disk('local');
+        $root = (string) config('filesystems.disks.local.root');
+        $this->line("Storage local root: {$root}");
+
         $probe = 'documents/.health-probe';
         try {
-            $disk->put($probe, 'ok');
+            if (! $disk->put($probe, 'ok')) {
+                throw new \RuntimeException('put() devolvió false (revisa permisos de storage/app/private).');
+            }
+            if (! $disk->exists($probe)) {
+                throw new \RuntimeException('El archivo de prueba no existe tras guardarlo.');
+            }
             $disk->delete($probe);
             $this->info('Storage local (private): escribible');
         } catch (\Throwable $e) {
             $ok = false;
             $this->error('Storage local: '.$e->getMessage());
+            $this->warn('En el servidor: sudo mkdir -p storage/app/private/documents && sudo chown -R www-data:www-data storage bootstrap/cache');
         }
 
         try {

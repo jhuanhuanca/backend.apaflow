@@ -31,9 +31,9 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        // Si la petición falla con 500, el navegador no ve CORS → "blocked by CORS policy".
+        // Errores 4xx/5xx sin cabeceras CORS → el navegador muestra "blocked by CORS policy".
         $exceptions->respond(function (\Symfony\Component\HttpFoundation\Response $response, \Throwable $e, \Illuminate\Http\Request $request) {
-            if (! $request->is('api/*', 'sanctum/*')) {
+            if (! $request->is('api/*', 'sanctum/csrf-cookie')) {
                 return $response;
             }
 

@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\Document;
+use App\Services\Documents\DocumentFileStorage;
 use App\Services\SaaS\SubscriptionService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -28,7 +29,7 @@ class ProcessDocumentJob implements ShouldQueue
 
     public function __construct(public Document $document) {}
 
-    public function handle(SubscriptionService $subscriptions): void
+    public function handle(SubscriptionService $subscriptions, DocumentFileStorage $documentStorage): void
     {
         $document = $this->document->fresh(['user']);
         if (! $document) {
@@ -39,8 +40,11 @@ class ProcessDocumentJob implements ShouldQueue
         $document->addLog('Estado: procesando. Enviando archivo al motor APA (Python FastAPI).');
 
         $disk = Storage::disk('local');
-        if (! $disk->exists($document->original_file)) {
-            $this->failDocument($document, 'No se encontró el archivo original en storage.');
+        if (! $documentStorage->originalExists($document->original_file)) {
+            $hint = $document->original_file === '0' || $document->original_file === ''
+                ? ' La ruta en BD es inválida ("'.$document->original_file.'"): el guardado falló al subir (permisos en storage/app/private).'
+                : ' Ruta registrada: '.$document->original_file.'.';
+            $this->failDocument($document, 'No se encontró el archivo original en storage.'.$hint);
 
             return;
         }

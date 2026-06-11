@@ -5,12 +5,14 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Jobs\ProcessDocumentJob;
 use App\Models\Document;
+use App\Services\Documents\DocumentFileStorage;
 use App\Services\SaaS\CareerSelectionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
@@ -26,6 +28,7 @@ class GuestDocumentController extends Controller
 
     public function __construct(
         private readonly CareerSelectionService $careerSelection,
+        private readonly DocumentFileStorage $documentStorage,
     ) {}
 
     /**
@@ -120,7 +123,23 @@ class GuestDocumentController extends Controller
             }
 
             $dir = $this->guestDir($fp);
-            $storedPath = $request->file('file')->store("documents/{$dir}", 'local');
+
+            try {
+                $storedPath = $this->documentStorage->storeOriginal(
+                    $request->file('file'),
+                    $dir,
+                );
+            } catch (RuntimeException $e) {
+                Log::error('Fallo upload documento (invitado)', [
+                    'guest_dir' => $dir,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return response()->json([
+                    'message' => $e->getMessage(),
+                    'code' => 'STORAGE_WRITE_FAILED',
+                ], 500);
+            }
 
             $document = Document::create([
                 'user_id' => null,

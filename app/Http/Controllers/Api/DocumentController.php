@@ -5,11 +5,14 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Jobs\ProcessDocumentJob;
 use App\Models\Document;
+use App\Services\Documents\DocumentFileStorage;
 use App\Services\SaaS\CareerSelectionService;
 use App\Services\SaaS\SubscriptionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class DocumentController extends Controller
@@ -17,6 +20,7 @@ class DocumentController extends Controller
     public function __construct(
         private readonly CareerSelectionService $careerSelection,
         private readonly SubscriptionService $subscriptions,
+        private readonly DocumentFileStorage $documentStorage,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -77,7 +81,22 @@ class DocumentController extends Controller
 
         $billingStatus = $this->subscriptions->billingStatusForNewDocument($user);
 
-        $storedPath = $request->file('file')->store("documents/{$user->id}", 'local');
+        try {
+            $storedPath = $this->documentStorage->storeOriginal(
+                $request->file('file'),
+                (string) $user->id,
+            );
+        } catch (RuntimeException $e) {
+            Log::error('Fallo upload documento (usuario)', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => $e->getMessage(),
+                'code' => 'STORAGE_WRITE_FAILED',
+            ], 500);
+        }
 
         $document = Document::create([
             'user_id' => $user->id,
