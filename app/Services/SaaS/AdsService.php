@@ -35,10 +35,9 @@ class AdsService
     {
         return [
             'enabled' => (bool) config('ads.enabled', false),
-            'provider' => (string) config('ads.provider', 'placeholder'),
+            'provider' => (string) config('ads.provider', 'adsense'),
+            'publisher_client' => (string) config('ads.publisher_client', ''),
             'lazy_load' => (bool) config('ads.lazy_load', true),
-            'slots' => config('ads.slots', []),
-            'inline_interval' => (int) config('ads.inline_interval', 3),
             'blocked_paths' => config('ads.blocked_paths', []),
         ];
     }
