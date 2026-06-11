@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Payments\PaddleBillingService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
@@ -67,6 +68,22 @@ class CheckApaflowServicesCommand extends Command
         } catch (\Throwable $e) {
             $ok = false;
             $this->error('Redis: '.$e->getMessage());
+        }
+
+        $paddleDiag = app(PaddleBillingService::class)->diagnostics();
+        $this->line('Paddle API base: '.$paddleDiag['api_base_url']);
+        $this->line('Paddle API key: '.($paddleDiag['api_key_prefix'] ?? '(vacía)'));
+        $this->line('Paddle client token: '.($paddleDiag['client_token_prefix'] ?? '(vacía)'));
+
+        if ($paddleDiag['server_configured']) {
+            $this->info('Paddle server: configurado');
+        } else {
+            $ok = false;
+            $this->error('Paddle server: faltan '.implode(', ', $paddleDiag['missing']));
+        }
+
+        if (! $paddleDiag['client_configured']) {
+            $this->warn('Paddle client_token: vacío (checkout overlay JS; checkout_url sigue funcionando).');
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;

@@ -14,6 +14,7 @@ use App\Services\SaaS\BillingService;
 use App\Services\SaaS\SubscriptionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use App\Enums\PaymentChannel;
 
@@ -42,8 +43,13 @@ class BillingController extends Controller
             try {
                 $result = $this->billing->initiateProSubscriptionWithPaddle($user);
             } catch (\Throwable $e) {
+                Log::error('paddle.init_pro_subscription_failed', [
+                    'user_id' => $user->id,
+                    'message' => $e->getMessage(),
+                ]);
+
                 return response()->json([
-                    'message' => 'No se pudo iniciar checkout Paddle.',
+                    'message' => $this->paddle->publicErrorMessage($e),
                     'code' => 'PADDLE_INIT_FAILED',
                     'detail' => app()->hasDebugModeEnabled() ? $e->getMessage() : null,
                 ], 502);
@@ -142,8 +148,14 @@ class BillingController extends Controller
             try {
                 $result = $this->billing->initiateDocumentPaymentWithPaddle($user, $document);
             } catch (\Throwable $e) {
+                Log::error('paddle.init_document_payment_failed', [
+                    'user_id' => $user->id,
+                    'document_id' => $document->id,
+                    'message' => $e->getMessage(),
+                ]);
+
                 return response()->json([
-                    'message' => 'No se pudo iniciar checkout Paddle para el documento.',
+                    'message' => $this->paddle->publicErrorMessage($e),
                     'code' => 'PADDLE_INIT_FAILED',
                     'detail' => app()->hasDebugModeEnabled() ? $e->getMessage() : null,
                 ], 502);

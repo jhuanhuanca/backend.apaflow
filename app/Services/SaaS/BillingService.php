@@ -112,11 +112,17 @@ class BillingService
             ],
         ]);
 
-        $transaction = $this->paddle->createTransaction(
-            $user,
-            $payment,
-            (string) config('paddle.prices.pro_subscription'),
-        );
+        try {
+            $transaction = $this->paddle->createTransaction(
+                $user,
+                $payment,
+                (string) config('paddle.prices.pro_subscription'),
+            );
+        } catch (\Throwable $e) {
+            $payment->forceFill(['status' => PaymentStatus::Canceled->value])->save();
+
+            throw $e;
+        }
 
         $payment->forceFill([
             'external_id' => (string) $transaction['id'],
@@ -127,7 +133,7 @@ class BillingService
 
         return [
             'payment' => $payment->fresh(),
-            'checkout' => $this->checkoutPayloadFromTransaction($transaction),
+            'checkout' => $this->paddle->checkoutPayloadFromTransaction($transaction),
         ];
     }
 
@@ -178,11 +184,17 @@ class BillingService
             ],
         ]);
 
-        $transaction = $this->paddle->createTransaction(
-            $user,
-            $payment,
-            (string) config('paddle.prices.document_checkout'),
-        );
+        try {
+            $transaction = $this->paddle->createTransaction(
+                $user,
+                $payment,
+                (string) config('paddle.prices.document_checkout'),
+            );
+        } catch (\Throwable $e) {
+            $payment->forceFill(['status' => PaymentStatus::Canceled->value])->save();
+
+            throw $e;
+        }
 
         $payment->forceFill([
             'external_id' => (string) $transaction['id'],
@@ -193,7 +205,7 @@ class BillingService
 
         return [
             'payment' => $payment->fresh(),
-            'checkout' => $this->checkoutPayloadFromTransaction($transaction),
+            'checkout' => $this->paddle->checkoutPayloadFromTransaction($transaction),
             'document' => $document->fresh(['logs']),
         ];
     }
@@ -218,19 +230,6 @@ class BillingService
         ProcessDocumentJob::dispatch($document->fresh());
 
         return $document->fresh(['logs']);
-    }
-
-    /**
-     * @param  array<string, mixed>  $transaction
-     * @return array<string, mixed>
-     */
-    private function checkoutPayloadFromTransaction(array $transaction): array
-    {
-        return [
-            'provider' => 'paddle',
-            'transaction_id' => $transaction['id'] ?? null,
-            'checkout_url' => $transaction['checkout']['url'] ?? null,
-        ];
     }
 
     /**
