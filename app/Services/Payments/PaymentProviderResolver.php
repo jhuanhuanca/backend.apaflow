@@ -8,7 +8,7 @@ class PaymentProviderResolver
     {
         $preference = strtolower(trim((string) config('payments.provider', 'auto')));
 
-        if ($preference === 'paddle' && PaddleBillingService::isConfigured()) {
+        if ($preference === 'paddle' && PaddleBillingService::isServerConfigured()) {
             return 'paddle';
         }
 
@@ -17,7 +17,7 @@ class PaymentProviderResolver
         }
 
         if ($preference === 'auto') {
-            if (PaddleBillingService::isConfigured()) {
+            if (PaddleBillingService::isServerConfigured()) {
                 return 'paddle';
             }
             if (self::demoEnabled()) {
@@ -26,6 +26,25 @@ class PaymentProviderResolver
         }
 
         return 'none';
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function missingConfiguration(): array
+    {
+        $preference = strtolower(trim((string) config('payments.provider', 'auto')));
+        $missing = [];
+
+        if (in_array($preference, ['paddle', 'auto'], true)) {
+            $missing = array_merge($missing, PaddleBillingService::missingServerKeys());
+        }
+
+        if (! self::demoEnabled() && ! PaddleBillingService::isServerConfigured()) {
+            $missing[] = 'PAYMENT_DEMO_UPGRADE (o credenciales Paddle completas)';
+        }
+
+        return array_values(array_unique($missing));
     }
 
     public static function demoEnabled(): bool

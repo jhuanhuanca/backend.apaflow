@@ -11,16 +11,55 @@ use RuntimeException;
 
 class PaddleBillingService
 {
-    public static function isConfigured(): bool
+    /**
+     * Backend: crear transacciones vía API (no requiere client_token).
+     */
+    public static function isServerConfigured(): bool
     {
         if (! (bool) config('paddle.enabled', true)) {
             return false;
         }
 
         return filled(config('paddle.api_key'))
-            && filled(config('paddle.client_token'))
             && filled(config('paddle.prices.pro_subscription'))
             && filled(config('paddle.prices.document_checkout'));
+    }
+
+    /**
+     * Frontend: overlay Paddle.js (requiere client_token además del API key).
+     */
+    public static function isClientConfigured(): bool
+    {
+        return self::isServerConfigured() && filled(config('paddle.client_token'));
+    }
+
+    /** @deprecated Usar isServerConfigured() o isClientConfigured() según el contexto. */
+    public static function isConfigured(): bool
+    {
+        return self::isClientConfigured();
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function missingServerKeys(): array
+    {
+        $missing = [];
+
+        if (! (bool) config('paddle.enabled', true)) {
+            $missing[] = 'PADDLE_ENABLED';
+        }
+        if (! filled(config('paddle.api_key'))) {
+            $missing[] = 'PADDLE_API_KEY';
+        }
+        if (! filled(config('paddle.prices.pro_subscription'))) {
+            $missing[] = 'PADDLE_PRICE_PRO';
+        }
+        if (! filled(config('paddle.prices.document_checkout'))) {
+            $missing[] = 'PADDLE_PRICE_DOCUMENT';
+        }
+
+        return $missing;
     }
 
     /**

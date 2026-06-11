@@ -224,9 +224,15 @@ class BillingController extends Controller
 
     private function paymentsDisabledResponse(): JsonResponse
     {
+        $missing = PaymentProviderResolver::missingConfiguration();
+
         return response()->json([
-            'message' => 'Los pagos no están configurados.',
+            'message' => $missing === []
+                ? 'Los pagos no están configurados.'
+                : 'Los pagos no están configurados. Faltan: '.implode(', ', $missing).'.',
             'code' => 'PAYMENTS_DISABLED',
+            'missing' => $missing,
+            'provider_preference' => config('payments.provider', 'auto'),
         ], 503);
     }
 
