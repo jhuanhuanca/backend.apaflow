@@ -11,6 +11,8 @@ return [
         'tagline' => env('SAAS_BRAND_TAGLINE', 'Convierte tu Word a formato APA 7'),
     ],
 
+    'frontend_url' => rtrim((string) env('FRONTEND_URL', 'https://apaflow.shop'), '/'),
+
     /*
     | Límites modo invitado (sin cuenta). Deben coincidir con la lógica de paywall en clientes.
     */

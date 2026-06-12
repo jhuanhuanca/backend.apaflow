@@ -33,8 +33,8 @@ return [
     ],
 
     'checkout' => [
-        'success_url' => env('PADDLE_CHECKOUT_SUCCESS_URL', 'https://apaflow.shop/apa-generator?pro=success'),
-        'cancel_url' => env('PADDLE_CHECKOUT_CANCEL_URL', 'https://apaflow.shop/apa-generator?pro=cancel'),
+        'success_url' => env('PADDLE_CHECKOUT_SUCCESS_URL'),
+        'cancel_url' => env('PADDLE_CHECKOUT_CANCEL_URL'),
     ],
 
 ];

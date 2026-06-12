@@ -2,6 +2,7 @@
 
 namespace App\Services\Payments;
 
+use App\Enums\PaymentFlow;
 use App\Models\Payment;
 use App\Models\User;
 use Illuminate\Http\Client\RequestException;
@@ -87,20 +88,42 @@ class PaddleBillingService
             ],
         ];
 
-        $successUrl = (string) config('paddle.checkout.success_url');
-        $cancelUrl = (string) config('paddle.checkout.cancel_url');
-        if ($successUrl !== '' || $cancelUrl !== '') {
-            $payload['checkout'] = array_filter([
-                'success_url' => $successUrl !== '' ? $successUrl : null,
-                'cancel_url' => $cancelUrl !== '' ? $cancelUrl : null,
-            ]);
-        }
+        $flowUrls = $this->checkoutUrlsForPayment($payment);
+        $payload['checkout'] = array_filter([
+            'success_url' => $flowUrls['success_url'],
+            'cancel_url' => $flowUrls['cancel_url'],
+        ]);
+
+        Log::info('paddle.create_transaction.request', [
+            'user_id' => $user->id,
+            'user_email' => $user->email,
+            'payment_id' => $payment->id,
+            'flow' => $payment->metadata['flow'] ?? null,
+            'price_id' => $resolvedPriceId,
+            'customer_id' => $customerId,
+            'payload' => $this->redactPayload($payload),
+        ]);
 
         $response = $this->request('POST', '/transactions', $payload);
         $transaction = $response['data'] ?? null;
 
         if (! is_array($transaction) || empty($transaction['id'])) {
             throw new RuntimeException('Paddle no devolvió una transacción válida.');
+        }
+
+        $checkoutPayload = $this->checkoutPayloadFromTransaction($transaction);
+
+        Log::info('paddle.create_transaction.response', [
+            'user_id' => $user->id,
+            'payment_id' => $payment->id,
+            'transaction_id' => $transaction['id'] ?? null,
+            'transaction_status' => $transaction['status'] ?? null,
+            'checkout_url' => $checkoutPayload['checkout_url'] ?? null,
+            'raw_checkout' => $transaction['checkout'] ?? null,
+        ]);
+
+        if (empty($checkoutPayload['checkout_url'])) {
+            throw new RuntimeException('Paddle creó la transacción pero no devolvió URL de checkout.');
         }
 
         return $transaction;
@@ -112,12 +135,30 @@ class PaddleBillingService
     public function checkoutPayloadFromTransaction(array $transaction): array
     {
         $checkout = is_array($transaction['checkout'] ?? null) ? $transaction['checkout'] : [];
+        $transactionId = isset($transaction['id']) ? (string) $transaction['id'] : null;
+        $rawUrl = $checkout['url'] ?? $transaction['checkout_url'] ?? null;
+        $checkoutUrl = $this->resolveCheckoutUrl(is_string($rawUrl) ? $rawUrl : null, $transactionId);
 
         return [
             'provider' => 'paddle',
-            'transaction_id' => $transaction['id'] ?? null,
-            'checkout_url' => $checkout['url'] ?? $transaction['checkout_url'] ?? null,
+            'transaction_id' => $transactionId,
+            'checkout_url' => $checkoutUrl,
         ];
+    }
+
+    public function resolveCheckoutUrl(?string $candidate, ?string $transactionId): ?string
+    {
+        $candidate = is_string($candidate) ? trim($candidate) : null;
+
+        if ($candidate !== null && $candidate !== '' && $this->isValidPaddleCheckoutUrl($candidate)) {
+            return $candidate;
+        }
+
+        if ($transactionId) {
+            return $this->hostedCheckoutUrl($transactionId);
+        }
+
+        return null;
     }
 
     /**
@@ -310,6 +351,12 @@ class PaddleBillingService
 
         $url = $baseUrl.$path;
 
+        Log::info('paddle.api_request', [
+            'method' => $method,
+            'url' => $url,
+            'payload' => $this->redactPayload($payload),
+        ]);
+
         try {
             $response = match (strtoupper($method)) {
                 'GET' => $client->get($url),
@@ -318,6 +365,13 @@ class PaddleBillingService
                 default => throw new RuntimeException('Método HTTP no soportado.'),
             };
 
+            Log::info('paddle.api_response', [
+                'method' => $method,
+                'url' => $url,
+                'status' => $response->status(),
+                'body' => mb_substr((string) $response->body(), 0, 2500),
+            ]);
+
             $response->throw();
         } catch (RequestException $e) {
             Log::error('paddle.api_request_failed', [
@@ -325,7 +379,8 @@ class PaddleBillingService
                 'path' => $path,
                 'base_url' => $baseUrl,
                 'status' => $e->response?->status(),
-                'body' => mb_substr((string) $e->response?->body(), 0, 1200),
+                'body' => mb_substr((string) $e->response?->body(), 0, 2500),
+                'exception' => $e->getMessage(),
             ]);
 
             throw $e;
@@ -381,6 +436,10 @@ class PaddleBillingService
         $code = trim((string) ($error['code'] ?? ''));
 
         if ($detail !== '' && $code !== '') {
+            if ($code === 'transaction_checkout_not_enabled') {
+                return $this->checkoutNotEnabledMessage($detail);
+            }
+
             return "Paddle ({$code}): {$detail}";
         }
 
@@ -389,5 +448,115 @@ class PaddleBillingService
         }
 
         return null;
+    }
+
+    /**
+     * @return array{success_url: string, cancel_url: string}
+     */
+    private function checkoutUrlsForPayment(Payment $payment): array
+    {
+        $frontend = (string) config('saas.frontend_url', 'https://apaflow.shop');
+        $flow = (string) ($payment->metadata['flow'] ?? '');
+        $docId = $payment->document_id ?? ($payment->metadata['document_id'] ?? null);
+
+        $successOverride = trim((string) config('paddle.checkout.success_url'));
+        $cancelOverride = trim((string) config('paddle.checkout.cancel_url'));
+
+        if ($successOverride !== '' && $cancelOverride !== '' && $flow === PaymentFlow::ProSubscription->value) {
+            return [
+                'success_url' => $successOverride,
+                'cancel_url' => $cancelOverride,
+            ];
+        }
+
+        return match ($flow) {
+            PaymentFlow::DocumentCheckout->value => [
+                'success_url' => "{$frontend}/apa-generator?checkout=success&docId={$docId}",
+                'cancel_url' => "{$frontend}/apa-generator?checkout=cancel&docId={$docId}",
+            ],
+            PaymentFlow::RegistrationCheckout->value => [
+                'success_url' => "{$frontend}/apa-generator?checkout=success&flow=registration",
+                'cancel_url' => "{$frontend}/registro/checkout?checkout=cancel",
+            ],
+            default => [
+                'success_url' => "{$frontend}/apa-generator?checkout=success&flow=pro",
+                'cancel_url' => "{$frontend}/apa-generator?checkout=cancel&flow=pro",
+            ],
+        };
+    }
+
+    private function hostedCheckoutUrl(string $transactionId): string
+    {
+        return $this->usesSandboxApi()
+            ? "https://sandbox-buy.paddle.com/checkout/{$transactionId}"
+            : "https://buy.paddle.com/checkout/{$transactionId}";
+    }
+
+    private function usesSandboxApi(): bool
+    {
+        $apiKey = (string) config('paddle.api_key');
+
+        if (str_starts_with($apiKey, 'test_')) {
+            return true;
+        }
+
+        if (str_starts_with($apiKey, 'live_')) {
+            return false;
+        }
+
+        return (bool) config('paddle.sandbox', true);
+    }
+
+    private function isValidPaddleCheckoutUrl(string $url): bool
+    {
+        if ($this->isAppRedirectUrl($url)) {
+            Log::warning('paddle.rejected_app_url_as_checkout', ['url' => $url]);
+
+            return false;
+        }
+
+        return (bool) preg_match('#^https://([a-z0-9-]+\.)?(paddle\.(com|io)|buy\.paddle\.com)/#i', $url);
+    }
+
+    private function isAppRedirectUrl(string $url): bool
+    {
+        $blocked = array_filter([
+            rtrim((string) config('app.url'), '/'),
+            rtrim((string) config('saas.frontend_url'), '/'),
+            'https://apaflow.shop',
+            'http://apaflow.shop',
+            'https://www.apaflow.shop',
+        ]);
+
+        foreach ($blocked as $base) {
+            if ($base !== '' && str_starts_with($url, $base)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function checkoutNotEnabledMessage(string $detail): string
+    {
+        $apiKey = (string) config('paddle.api_key');
+        $isLive = str_starts_with($apiKey, 'live_') || ! $this->usesSandboxApi();
+
+        if ($isLive) {
+            return 'Tu cuenta Paddle LIVE aún no tiene el checkout habilitado. '
+                .'Completa la verificación de dominio y negocio en el panel de Paddle antes de cobrar en producción. '
+                .'Detalle: '.$detail;
+        }
+
+        return 'Paddle (transaction_checkout_not_enabled): '.$detail;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function redactPayload(array $payload): array
+    {
+        return $payload;
     }
 }

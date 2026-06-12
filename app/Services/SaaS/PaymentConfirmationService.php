@@ -103,6 +103,13 @@ class PaymentConfirmationService
         }
 
         $this->subscriptions->activateProSubscription($user);
+
+        if (($payment->metadata['flow'] ?? '') === PaymentFlow::RegistrationCheckout->value
+            && $user->registration_checkout_completed_at === null) {
+            $user->forceFill([
+                'registration_checkout_completed_at' => now(),
+            ])->save();
+        }
     }
 
     private function fail(string $message, string $code, int $status): never

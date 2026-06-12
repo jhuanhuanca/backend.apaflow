@@ -17,6 +17,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use App\Enums\PaymentChannel;
+use Throwable;
 
 class BillingController extends Controller
 {
@@ -42,35 +43,57 @@ class BillingController extends Controller
         if (PaymentProviderResolver::isPaddle()) {
             try {
                 $result = $this->billing->initiateProSubscriptionWithPaddle($user);
-            } catch (\Throwable $e) {
-                Log::error('paddle.init_pro_subscription_failed', [
-                    'user_id' => $user->id,
-                    'message' => $e->getMessage(),
-                ]);
-
-                return response()->json([
-                    'message' => $this->paddle->publicErrorMessage($e),
-                    'code' => 'PADDLE_INIT_FAILED',
-                    'detail' => app()->hasDebugModeEnabled() ? $e->getMessage() : null,
-                ], 502);
+            } catch (Throwable $e) {
+                return $this->paddleErrorResponse($e, $user, 'init_pro_subscription');
             }
 
-            return response()->json([
-                'message' => 'Checkout Paddle creado. Completa el pago para activar Pro.',
-                'payment' => $this->paymentPayload($result['payment']),
-                'checkout' => $result['checkout'],
-                'user' => $this->subscriptions->userPayload($user->fresh()),
-            ], 201);
+            return $this->paddleSuccessResponse(
+                $result,
+                $user,
+                'Checkout Paddle creado. Completa el pago para activar Pro.',
+            );
         }
 
         $payment = $this->billing->initiateProSubscription($user);
 
         return response()->json([
+            'success' => true,
+            'checkout_url' => null,
             'message' => 'Intención de pago creada. Completa el checkout para activar Pro.',
             'payment' => $this->paymentPayload($payment),
             'checkout' => ['provider' => 'demo'],
             'user' => $this->subscriptions->userPayload($user->fresh()),
         ], 201);
+    }
+
+    /**
+     * Checkout Paddle post-registro (plan Pro).
+     */
+    public function initiateRegistrationCheckout(Request $request): JsonResponse
+    {
+        if (! PaymentProviderResolver::isPaddle()) {
+            return response()->json([
+                'success' => false,
+                'error' => 'El checkout Paddle no está disponible.',
+                'message' => 'El checkout Paddle no está disponible.',
+                'code' => 'PADDLE_NOT_CONFIGURED',
+            ], 409);
+        }
+
+        /** @var User $user */
+        $user = $request->user();
+
+        try {
+            $result = $this->billing->initiateRegistrationCheckoutWithPaddle($user);
+        } catch (Throwable $e) {
+            return $this->paddleErrorResponse($e, $user, 'init_registration_checkout');
+        }
+
+        return $this->paddleSuccessResponse(
+            $result,
+            $user,
+            'Checkout Paddle creado. Completa el pago para activar tu cuenta Pro.',
+        );
     }
 
     /**
@@ -80,7 +103,9 @@ class BillingController extends Controller
     {
         if (! PaymentProviderResolver::isDemo()) {
             return response()->json([
-                'message' => 'La confirmación manual no aplica con Paddle. Usa el checkout y espera la confirmación.',
+                'success' => false,
+                'error' => 'La confirmación manual no aplica con Paddle. Usa el checkout de Paddle.',
+                'message' => 'La confirmación manual no aplica con Paddle. Usa el checkout de Paddle.',
                 'code' => 'USE_PADDLE_CHECKOUT',
             ], 409);
         }
@@ -109,12 +134,15 @@ class BillingController extends Controller
             );
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
+                'success' => false,
+                'error' => 'Datos de pago inválidos.',
                 'message' => 'Datos de pago inválidos.',
                 'errors' => $e->errors(),
             ], 422);
         }
 
         return response()->json([
+            'success' => true,
             'message' => 'Pago confirmado. Plan Pro activado.',
             'user' => $this->subscriptions->userPayload($user),
         ]);
@@ -147,27 +175,18 @@ class BillingController extends Controller
         if (PaymentProviderResolver::isPaddle()) {
             try {
                 $result = $this->billing->initiateDocumentPaymentWithPaddle($user, $document);
-            } catch (\Throwable $e) {
-                Log::error('paddle.init_document_payment_failed', [
-                    'user_id' => $user->id,
+            } catch (Throwable $e) {
+                return $this->paddleErrorResponse($e, $user, 'init_document_payment', [
                     'document_id' => $document->id,
-                    'message' => $e->getMessage(),
                 ]);
-
-                return response()->json([
-                    'message' => $this->paddle->publicErrorMessage($e),
-                    'code' => 'PADDLE_INIT_FAILED',
-                    'detail' => app()->hasDebugModeEnabled() ? $e->getMessage() : null,
-                ], 502);
             }
 
-            return response()->json([
-                'message' => 'Checkout Paddle creado. Completa el pago para procesar el documento.',
-                'payment' => $this->paymentPayload($result['payment']),
-                'checkout' => $result['checkout'],
-                'document' => $result['document'],
-                'user' => $this->subscriptions->userPayload($user->fresh()),
-            ], 201);
+            return $this->paddleSuccessResponse(
+                $result,
+                $user,
+                'Checkout Paddle creado. Completa el pago para procesar el documento.',
+                $result['document'] ?? null,
+            );
         }
 
         $channel = $data['channel'] instanceof PaymentChannel
@@ -178,12 +197,15 @@ class BillingController extends Controller
             $document = $this->billing->completeDocumentPayment($user, $document, $channel, $data);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
+                'success' => false,
+                'error' => 'Datos de pago inválidos.',
                 'message' => 'Datos de pago inválidos.',
                 'errors' => $e->errors(),
             ], 422);
         }
 
         return response()->json([
+            'success' => true,
             'message' => 'Pago confirmado. El documento se está procesando.',
             'document' => $document,
             'user' => $this->subscriptions->userPayload($user->fresh()),
@@ -212,6 +234,7 @@ class BillingController extends Controller
         }
 
         $payload = [
+            'success' => true,
             'payment' => $this->paymentPayload($payment->fresh()),
             'user' => $this->subscriptions->userPayload($user->fresh()),
         ];
@@ -237,15 +260,79 @@ class BillingController extends Controller
     private function paymentsDisabledResponse(): JsonResponse
     {
         $missing = PaymentProviderResolver::missingConfiguration();
+        $message = $missing === []
+            ? 'Los pagos no están configurados.'
+            : 'Los pagos no están configurados. Faltan: '.implode(', ', $missing).'.';
 
         return response()->json([
-            'message' => $missing === []
-                ? 'Los pagos no están configurados.'
-                : 'Los pagos no están configurados. Faltan: '.implode(', ', $missing).'.',
+            'success' => false,
+            'error' => $message,
+            'message' => $message,
             'code' => 'PAYMENTS_DISABLED',
             'missing' => $missing,
             'provider_preference' => config('payments.provider', 'auto'),
         ], 503);
+    }
+
+    /**
+     * @param  array{payment: Payment, checkout: array<string, mixed>, document?: Document|null}  $result
+     */
+    private function paddleSuccessResponse(
+        array $result,
+        User $user,
+        string $message,
+        ?Document $document = null,
+    ): JsonResponse {
+        $checkout = $result['checkout'] ?? [];
+        $checkoutUrl = $checkout['checkout_url'] ?? null;
+
+        Log::info('paddle.checkout_ready', [
+            'user_id' => $user->id,
+            'user_email' => $user->email,
+            'payment_id' => $result['payment']->id,
+            'transaction_id' => $checkout['transaction_id'] ?? null,
+            'checkout_url' => $checkoutUrl,
+        ]);
+
+        $payload = [
+            'success' => true,
+            'checkout_url' => $checkoutUrl,
+            'message' => $message,
+            'payment' => $this->paymentPayload($result['payment']),
+            'checkout' => $checkout,
+            'user' => $this->subscriptions->userPayload($user->fresh()),
+        ];
+
+        $doc = $document ?? ($result['document'] ?? null);
+        if ($doc instanceof Document) {
+            $payload['document'] = $doc;
+        }
+
+        return response()->json($payload, 201);
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function paddleErrorResponse(Throwable $e, User $user, string $context, array $extra = []): JsonResponse
+    {
+        $message = $this->paddle->publicErrorMessage($e);
+
+        Log::error("paddle.{$context}_failed", array_merge([
+            'user_id' => $user->id,
+            'user_email' => $user->email,
+            'message' => $e->getMessage(),
+            'public_message' => $message,
+            'exception_class' => $e::class,
+        ], $extra));
+
+        return response()->json([
+            'success' => false,
+            'error' => $message,
+            'message' => $message,
+            'code' => 'PADDLE_INIT_FAILED',
+            'detail' => app()->hasDebugModeEnabled() ? $e->getMessage() : null,
+        ], 502);
     }
 
     /**

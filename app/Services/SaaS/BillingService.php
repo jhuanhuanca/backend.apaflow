@@ -138,6 +138,80 @@ class BillingService
     }
 
     /**
+     * Paso 1 (Paddle): checkout post-registro con plan Pro.
+     *
+     * @return array{payment: Payment, checkout: array<string, mixed>}
+     */
+    public function initiateRegistrationCheckoutWithPaddle(User $user): array
+    {
+        if ($user->registration_checkout_completed_at !== null) {
+            throw new HttpResponseException(response()->json([
+                'message' => 'El acceso ya está desbloqueado.',
+                'code' => 'CHECKOUT_ALREADY_COMPLETED',
+            ], 409));
+        }
+
+        Payment::query()
+            ->where('user_id', $user->id)
+            ->where('status', PaymentStatus::Pending->value)
+            ->where('metadata->flow', PaymentFlow::RegistrationCheckout->value)
+            ->update(['status' => PaymentStatus::Canceled->value]);
+
+        $payment = Payment::query()->create([
+            'user_id' => $user->id,
+            'amount_cents' => $this->subscriptions->proSubscriptionPriceCents(),
+            'currency' => config('saas.pricing.currency', 'USD'),
+            'status' => PaymentStatus::Pending->value,
+            'provider' => 'paddle',
+            'channel' => PaymentChannel::Card,
+            'external_id' => null,
+            'metadata' => [
+                'flow' => PaymentFlow::RegistrationCheckout->value,
+                'plan' => UserPlan::Pro->value,
+                'paddle_price_id' => config('paddle.prices.pro_subscription'),
+            ],
+        ]);
+
+        try {
+            $transaction = $this->paddle->createTransaction(
+                $user,
+                $payment,
+                (string) config('paddle.prices.pro_subscription'),
+            );
+        } catch (\Throwable $e) {
+            $payment->forceFill(['status' => PaymentStatus::Canceled->value])->save();
+
+            throw $e;
+        }
+
+        $payment->forceFill([
+            'external_id' => (string) $transaction['id'],
+            'metadata' => array_merge($payment->metadata ?? [], [
+                'paddle_transaction_id' => $transaction['id'],
+            ]),
+        ])->save();
+
+        return [
+            'payment' => $payment->fresh(),
+            'checkout' => $this->paddle->checkoutPayloadFromTransaction($transaction),
+        ];
+    }
+
+    /**
+     * Activa cuenta gratuita (pay-per-download) sin pasarela.
+     */
+    public function completeFreeRegistrationCheckout(User $user): User
+    {
+        if ($user->registration_checkout_completed_at !== null) {
+            return $user->fresh();
+        }
+
+        $this->subscriptions->completeFreeRegistration($user);
+
+        return $user->fresh();
+    }
+
+    /**
      * Paso 1 (Paddle): pago por documento + checkout.
      *
      * @return array{payment: Payment, checkout: array<string, mixed>, document: Document}

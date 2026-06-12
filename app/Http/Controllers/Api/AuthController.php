@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\Payments\PaymentProviderResolver;
 use App\Services\SaaS\SubscriptionService;
 use App\Support\ApiUserResolver;
 use Illuminate\Http\JsonResponse;
@@ -37,7 +38,9 @@ class AuthController extends Controller
             'password' => Hash::make($data['password']),
         ]);
 
-        if (! (bool) config('payments.demo_upgrade_enabled', false)) {
+        if (PaymentProviderResolver::isPaddle()) {
+            // Con Paddle el checkout post-registro desbloquea la cuenta.
+        } elseif (! PaymentProviderResolver::demoEnabled()) {
             $user->forceFill([
                 'registration_checkout_completed_at' => now(),
             ])->save();
