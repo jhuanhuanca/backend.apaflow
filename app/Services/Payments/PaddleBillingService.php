@@ -150,12 +150,12 @@ class PaddleBillingService
     {
         $candidate = is_string($candidate) ? trim($candidate) : null;
 
-        if ($candidate !== null && $candidate !== '' && $this->isValidPaddleCheckoutUrl($candidate)) {
+        if ($candidate !== null && $candidate !== '' && $this->isValidCheckoutUrl($candidate)) {
             return $candidate;
         }
 
         if ($transactionId) {
-            return $this->hostedCheckoutUrl($transactionId);
+            return $this->defaultPaymentLinkCheckoutUrl($transactionId);
         }
 
         return null;
@@ -440,6 +440,17 @@ class PaddleBillingService
                 return $this->checkoutNotEnabledMessage($detail);
             }
 
+            if ($code === 'transaction_default_checkout_url_not_set') {
+                return 'Paddle: debes configurar el Default payment link en Paddle → Checkout → Checkout settings '
+                    .'(usa https://apaflow.shop/apa-generator en LIVE o https://localhost/apa-generator en sandbox). '
+                    .'Detalle: '.$detail;
+            }
+
+            if ($code === 'transaction_checkout_url_domain_is_not_approved') {
+                return 'Paddle: el dominio de checkout no está aprobado. Aprueba apaflow.shop en Paddle → Checkout → Website approval. '
+                    .'Detalle: '.$detail;
+            }
+
             return "Paddle ({$code}): {$detail}";
         }
 
@@ -485,11 +496,11 @@ class PaddleBillingService
         };
     }
 
-    private function hostedCheckoutUrl(string $transactionId): string
+    private function defaultPaymentLinkCheckoutUrl(string $transactionId): string
     {
-        return $this->usesSandboxApi()
-            ? "https://sandbox-buy.paddle.com/checkout/{$transactionId}"
-            : "https://buy.paddle.com/checkout/{$transactionId}";
+        $frontend = rtrim((string) config('saas.frontend_url', 'https://apaflow.shop'), '/');
+
+        return $frontend.'/apa-generator?_ptxn='.urlencode($transactionId);
     }
 
     private function usesSandboxApi(): bool
@@ -507,19 +518,29 @@ class PaddleBillingService
         return (bool) config('paddle.sandbox', true);
     }
 
-    private function isValidPaddleCheckoutUrl(string $url): bool
+    private function isValidCheckoutUrl(string $url): bool
     {
-        if ($this->isAppRedirectUrl($url)) {
-            Log::warning('paddle.rejected_app_url_as_checkout', ['url' => $url]);
-
-            return false;
+        if ($this->isPaddleTransactionLink($url)) {
+            return true;
         }
 
         return (bool) preg_match('#^https://([a-z0-9-]+\.)?(paddle\.(com|io)|buy\.paddle\.com)/#i', $url);
     }
 
+    /**
+     * Paddle arma checkout.url como default payment link + ?_ptxn=txn_* (dominio aprobado).
+     */
+    private function isPaddleTransactionLink(string $url): bool
+    {
+        return str_contains($url, '_ptxn=');
+    }
+
     private function isAppRedirectUrl(string $url): bool
     {
+        if ($this->isPaddleTransactionLink($url)) {
+            return false;
+        }
+
         $blocked = array_filter([
             rtrim((string) config('app.url'), '/'),
             rtrim((string) config('saas.frontend_url'), '/'),
