@@ -259,14 +259,35 @@ class BillingController extends Controller
             ->where('user_id', $user->id)
             ->findOrFail((int) $data['document_id']);
 
-        $result = $this->billing->syncDocumentPaymentFromPaddle($user, $document, $this->paddleWebhook);
+        try {
+            $result = $this->billing->syncDocumentPaymentFromPaddle($user, $document, $this->paddleWebhook);
+        } catch (\Throwable $e) {
+            Log::error('billing.sync_document_payment_failed', [
+                'user_id' => $user->id,
+                'document_id' => $document->id,
+                'message' => $e->getMessage(),
+                'exception' => $e::class,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => app()->hasDebugModeEnabled()
+                    ? $e->getMessage()
+                    : 'No se pudo sincronizar el pago del documento.',
+                'message' => 'No se pudo sincronizar el pago del documento.',
+                'code' => 'SYNC_FAILED',
+            ], 500);
+        }
+
+        $freshDocument = $result['document']->fresh();
+        $freshPayment = $result['payment']?->fresh();
 
         return response()->json([
             'success' => true,
             'synced' => (bool) $result['synced'],
             'reason' => $result['reason'] ?? null,
-            'document' => $result['document'],
-            'payment' => $result['payment'] ? $this->paymentPayload($result['payment']) : null,
+            'document' => $freshDocument,
+            'payment' => $freshPayment ? $this->paymentPayload($freshPayment) : null,
             'user' => $this->subscriptions->userPayload($user->fresh()),
         ]);
     }

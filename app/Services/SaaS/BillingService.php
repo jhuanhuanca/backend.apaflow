@@ -12,6 +12,7 @@ use App\Models\Document;
 use App\Models\Payment;
 use App\Models\User;
 use App\Services\Payments\PaddleBillingService;
+use App\Services\Payments\PaddleWebhookHandler;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -350,10 +351,15 @@ class BillingService
 
         return [
             'synced' => $synced,
-            'document' => $document->fresh(['logs']),
+            'document' => Document::query()->with('logs')->findOrFail($document->id),
             'payment' => $payment->fresh(),
         ];
     }
+
+    /**
+     * Paso 2: confirmar pago Pro (demo). Solo tras validación → status paid → PRO.
+     */
+    public function confirmProSubscription(User $user, int $paymentId, PaymentChannel $channel, array $data = []): User
     {
         $payment = Payment::query()
             ->where('user_id', $user->id)
