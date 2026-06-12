@@ -62,6 +62,7 @@ Route::middleware(['auth:sanctum', 'subscription.current'])->group(function (): 
         Route::post('/upload-document', [DocumentController::class, 'upload']);
         Route::get('/documents', [DocumentController::class, 'index']);
         Route::get('/document/{id}', [DocumentController::class, 'show'])->whereNumber('id');
+        Route::post('/document/{id}/retry-processing', [DocumentController::class, 'retryProcessing'])->whereNumber('id');
         Route::get('/document/{id}/download', [DocumentController::class, 'download'])->whereNumber('id');
     });
 });

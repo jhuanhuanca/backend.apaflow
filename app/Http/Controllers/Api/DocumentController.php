@@ -3,9 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Jobs\ProcessDocumentJob;
 use App\Models\Document;
+use App\Models\DocumentLog;
 use App\Services\Documents\DocumentFileStorage;
+use App\Services\Documents\DocumentProcessingService;
 use App\Services\SaaS\CareerSelectionService;
 use App\Services\SaaS\SubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -21,6 +22,7 @@ class DocumentController extends Controller
         private readonly CareerSelectionService $careerSelection,
         private readonly SubscriptionService $subscriptions,
         private readonly DocumentFileStorage $documentStorage,
+        private readonly DocumentProcessingService $documentProcessing,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -42,7 +44,26 @@ class DocumentController extends Controller
                 'updated_at',
             ]);
 
-        return response()->json($documents);
+        $failedIds = $documents->where('status', Document::STATUS_FAILED)->pluck('id');
+        $lastErrors = $failedIds->isEmpty()
+            ? collect()
+            : DocumentLog::query()
+                ->whereIn('document_id', $failedIds)
+                ->orderByDesc('id')
+                ->get()
+                ->unique('document_id')
+                ->keyBy('document_id');
+
+        $payload = $documents->map(function (Document $document) use ($lastErrors) {
+            $row = $document->toArray();
+            if ($document->status === Document::STATUS_FAILED) {
+                $row['last_error'] = $lastErrors->get($document->id)?->message;
+            }
+
+            return $row;
+        });
+
+        return response()->json($payload);
     }
 
     public function show(Request $request, int $id): JsonResponse
@@ -113,7 +134,7 @@ class DocumentController extends Controller
 
         if ($billingStatus->allowsProcessing()) {
             $document->addLog('Documento encolado para formateo APA 7.');
-            ProcessDocumentJob::dispatch($document);
+            $this->documentProcessing->queueNewDocument($document);
 
             return response()->json($document->load('logs'), 202);
         }
@@ -151,5 +172,26 @@ class DocumentController extends Controller
         $name = basename($document->processed_file);
 
         return Storage::disk('local')->download($document->processed_file, "apa7_{$name}");
+    }
+
+    public function retryProcessing(Request $request, int $id): JsonResponse
+    {
+        $document = Document::query()
+            ->where('user_id', $request->user()->id)
+            ->findOrFail($id);
+
+        try {
+            $document = $this->documentProcessing->retry($document);
+        } catch (\RuntimeException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'code' => 'RETRY_NOT_ALLOWED',
+            ], 409);
+        }
+
+        return response()->json([
+            'message' => 'Documento reencolado para conversión APA 7.',
+            'document' => $document,
+        ], 202);
     }
 }

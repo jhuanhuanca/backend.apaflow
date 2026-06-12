@@ -7,8 +7,8 @@ use App\Enums\PaymentChannel;
 use App\Enums\PaymentFlow;
 use App\Enums\PaymentStatus;
 use App\Enums\UserPlan;
-use App\Jobs\ProcessDocumentJob;
 use App\Models\Document;
+use App\Services\Documents\DocumentProcessingService;
 use App\Models\Payment;
 use App\Models\User;
 use App\Services\Payments\PaddleBillingService;
@@ -28,6 +28,7 @@ class BillingService
         private readonly SubscriptionService $subscriptions,
         private readonly PaymentConfirmationService $confirmation,
         private readonly PaddleBillingService $paddle,
+        private readonly DocumentProcessingService $documentProcessing,
     ) {}
 
     public function validateDemoCardPayload(array $data, PaymentChannel $channel): void
@@ -293,6 +294,8 @@ class BillingService
         $document = Document::query()->findOrFail((int) ($payment->document_id ?? $payment->metadata['document_id'] ?? 0));
 
         if ($document->billing_status === DocumentBillingStatus::Paid) {
+            $this->documentProcessing->ensureQueued($document);
+
             return $document->fresh(['logs']);
         }
 
@@ -302,7 +305,11 @@ class BillingService
         ])->save();
 
         $document->addLog('Pago confirmado. Documento encolado para formateo APA 7.');
-        ProcessDocumentJob::dispatch($document->fresh());
+        if ($document->status === Document::STATUS_PENDING) {
+            $this->documentProcessing->queueNewDocument($document->fresh());
+        } else {
+            $this->documentProcessing->ensureQueued($document->fresh());
+        }
 
         return $document->fresh(['logs']);
     }
@@ -321,9 +328,11 @@ class BillingService
         $document = $document->fresh(['logs']);
 
         if ($document->billing_status === DocumentBillingStatus::Paid) {
+            $this->documentProcessing->ensureQueued($document);
+
             return [
                 'synced' => true,
-                'document' => $document,
+                'document' => $document->fresh(['logs']),
                 'payment' => $document->payment_id
                     ? Payment::query()->find($document->payment_id)
                     : null,
