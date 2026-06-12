@@ -44,12 +44,16 @@ class ClientConfigController extends Controller
                 'provider' => PaymentProviderResolver::current(),
                 'demo_checkout_enabled' => PaymentProviderResolver::demoEnabled(),
                 'paddle' => [
-                    'enabled' => PaddleBillingService::isClientConfigured(),
                     'server_enabled' => PaddleBillingService::isServerConfigured(),
-                    'client_token' => PaddleBillingService::isClientConfigured()
-                        ? config('paddle.client_token')
+                    'checkout_ready' => PaddleBillingService::isClientConfigured(),
+                    'enabled' => PaddleBillingService::isClientConfigured(),
+                    'client_token' => filled(config('paddle.client_token'))
+                        ? (string) config('paddle.client_token')
                         : null,
-                    'environment' => (bool) config('paddle.sandbox', true) ? 'sandbox' : 'production',
+                    'environment' => PaddleBillingService::isServerConfigured() && (
+                        str_starts_with((string) config('paddle.api_key'), 'test_')
+                        || ((bool) config('paddle.sandbox', true) && ! str_starts_with((string) config('paddle.api_key'), 'live_'))
+                    ) ? 'sandbox' : 'production',
                 ],
             ],
             'auth' => [
