@@ -226,11 +226,8 @@ class BillingController extends Controller
             && $payment->status === PaymentStatus::Pending
             && filled($payment->external_id)
         ) {
-            $transaction = $this->paddle->fetchTransaction((string) $payment->external_id);
-            if (is_array($transaction) && ($transaction['status'] ?? '') === 'completed') {
-                $this->paddleWebhook->completePaymentFromTransaction($transaction);
-                $payment = $payment->fresh();
-            }
+            $this->paddleWebhook->syncPendingPayment($payment);
+            $payment = $payment->fresh();
         }
 
         $payload = [
@@ -244,6 +241,34 @@ class BillingController extends Controller
         }
 
         return response()->json($payload);
+    }
+
+    /**
+     * Confirma pago Paddle de un documento consultando la API (si el webhook no llegó aún).
+     */
+    public function syncDocumentPayment(Request $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $data = $request->validate([
+            'document_id' => ['required', 'integer', 'exists:documents,id'],
+        ]);
+
+        $document = Document::query()
+            ->where('user_id', $user->id)
+            ->findOrFail((int) $data['document_id']);
+
+        $result = $this->billing->syncDocumentPaymentFromPaddle($user, $document, $this->paddleWebhook);
+
+        return response()->json([
+            'success' => true,
+            'synced' => (bool) $result['synced'],
+            'reason' => $result['reason'] ?? null,
+            'document' => $result['document'],
+            'payment' => $result['payment'] ? $this->paymentPayload($result['payment']) : null,
+            'user' => $this->subscriptions->userPayload($user->fresh()),
+        ]);
     }
 
     /**

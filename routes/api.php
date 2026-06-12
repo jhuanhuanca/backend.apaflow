@@ -48,6 +48,7 @@ Route::middleware(['auth:sanctum', 'subscription.current'])->group(function (): 
     Route::get('/billing/checkout-status', [BillingDemoController::class, 'checkoutStatus']);
     Route::post('/billing/complete-registration-checkout', [BillingDemoController::class, 'completeRegistrationCheckout']);
     Route::post('/billing/complete-document-payment', [BillingController::class, 'completeDocumentPayment']);
+    Route::post('/billing/document-payment/sync', [BillingController::class, 'syncDocumentPayment']);
     Route::get('/billing/payments/{payment}', [BillingController::class, 'paymentStatus']);
     Route::post('/billing/registration-checkout/initiate', [BillingController::class, 'initiateRegistrationCheckout']);
     Route::post('/billing/pro-subscription/initiate', [BillingController::class, 'initiateProSubscription']);

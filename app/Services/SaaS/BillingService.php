@@ -307,9 +307,53 @@ class BillingService
     }
 
     /**
-     * Paso 2: confirmar pago Pro (demo). Solo tras validación → status paid → PRO.
+     * Sincroniza pago Paddle pendiente de un documento (polling SPA / post-checkout).
+     *
+     * @return array{synced: bool, document: Document, payment: ?Payment, reason?: string}
      */
-    public function confirmProSubscription(User $user, int $paymentId, PaymentChannel $channel, array $data = []): User
+    public function syncDocumentPaymentFromPaddle(User $user, Document $document, PaddleWebhookHandler $paddleWebhook): array
+    {
+        if ($document->user_id !== $user->id) {
+            abort(404);
+        }
+
+        $document = $document->fresh(['logs']);
+
+        if ($document->billing_status === DocumentBillingStatus::Paid) {
+            return [
+                'synced' => true,
+                'document' => $document,
+                'payment' => $document->payment_id
+                    ? Payment::query()->find($document->payment_id)
+                    : null,
+            ];
+        }
+
+        $payment = Payment::query()
+            ->where('user_id', $user->id)
+            ->where('document_id', $document->id)
+            ->where('status', PaymentStatus::Pending->value)
+            ->where('provider', 'paddle')
+            ->orderByDesc('id')
+            ->first();
+
+        if (! $payment || ! filled($payment->external_id)) {
+            return [
+                'synced' => false,
+                'document' => $document,
+                'payment' => $payment,
+                'reason' => 'no_pending_paddle_payment',
+            ];
+        }
+
+        $synced = $paddleWebhook->syncPendingPayment($payment);
+
+        return [
+            'synced' => $synced,
+            'document' => $document->fresh(['logs']),
+            'payment' => $payment->fresh(),
+        ];
+    }
     {
         $payment = Payment::query()
             ->where('user_id', $user->id)

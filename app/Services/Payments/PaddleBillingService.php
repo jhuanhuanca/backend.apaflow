@@ -65,6 +65,14 @@ class PaddleBillingService
     }
 
     /**
+     * Transacción cobrada en Paddle (acepta paid y completed).
+     */
+    public function isTransactionSettled(array $transaction): bool
+    {
+        return in_array((string) ($transaction['status'] ?? ''), ['paid', 'completed'], true);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function createTransaction(User $user, Payment $payment, string $priceId): array
